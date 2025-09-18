@@ -41,3 +41,5 @@ def format_history_for_prompt(messages: List[Dict]) -> str:
         role = "user" if m.get("role") == "user" else "system"
         lines.append(f"{role}: {m.get('content','')}")
     return "\n".join(lines)
+
+
