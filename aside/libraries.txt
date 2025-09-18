@@ -1,9 +1,0 @@
-sentence_transformers
-faiss-cpu
-python-telegram-bot
-python-dotenv
-elevenlabs
-openai
-arabic-reshaper
-python-bidi
-watchdog
