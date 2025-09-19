@@ -24,20 +24,23 @@ from collections import defaultdict
 
 
 # Load APIs and data
+# Determine project root (parent directory of src/)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 load_dotenv()
 elevenlabs = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
 openai.api_key = os.getenv("OPENAI_API_KEY")
 telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
 
-index = faiss.read_index("data/storage/openai_index.faiss")
+index = faiss.read_index(os.path.join(PROJECT_ROOT, "data", "storage", "openai_index.faiss"))
 
-with open("data/storage/chunks_metadata.json", "r", encoding="utf-8") as f:
+with open(os.path.join(PROJECT_ROOT, "data", "storage", "chunks_metadata.json"), "r", encoding="utf-8") as f:
     metadata = json.load(f)
 
 history = RedisHistoryManager(max_messages=40)
 
 # Load character data
-with open("config/character.json", "r", encoding="utf-8") as f:
+with open(os.path.join(PROJECT_ROOT, "config", "character.json"), "r", encoding="utf-8") as f:
     character_data = json.load(f)
     # Extract the first dictionary if it's a list
     character = character_data[0] if isinstance(character_data, list) else character_data

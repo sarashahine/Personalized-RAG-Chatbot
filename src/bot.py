@@ -40,6 +40,9 @@ from prompts import (
     PERSONA_STYLE_PROMPT,
 )
 
+# Determine project root (parent directory of src/)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # Load environment variables
 load_dotenv()
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -51,21 +54,21 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Load FAISS index and metadata
-with open("data/storage/chunks_metadata.json", "r", encoding="utf-8") as f:
+with open(os.path.join(PROJECT_ROOT, "data", "storage", "chunks_metadata.json"), "r", encoding="utf-8") as f:
     metadata = json.load(f)
 
 # Load FAISS indexes (support multiple for performance scaling)
 indexes = {}
 categories = ["tafsir", "hadith", "speeches", "history", "politics", "general"]
 for category in categories:
-    index_path = f"data/storage/{category}_index.faiss"
+    index_path = os.path.join(PROJECT_ROOT, "data", "storage", f"{category}_index.faiss")
     if os.path.exists(index_path):
         indexes[category] = faiss.read_index(index_path)
     else:
         indexes[category] = None
 
 # Main index as fallback
-main_index_path = "data/storage/openai_index.faiss"
+main_index_path = os.path.join(PROJECT_ROOT, "data", "storage", "openai_index.faiss")
 if os.path.exists(main_index_path):
     main_index = faiss.read_index(main_index_path)
     for category in categories:
@@ -78,12 +81,12 @@ else:
 index = main_index
 
 # Load character data
-with open("config/character.json", "r", encoding="utf-8") as f:
+with open(os.path.join(PROJECT_ROOT, "config", "character.json"), "r", encoding="utf-8") as f:
     character_data = json.load(f)
 character = character_data[0] if isinstance(character_data, list) else character_data
 
 # Load personality instructions
-with open("config/personality_instructions.json", "r", encoding="utf-8") as f:
+with open(os.path.join(PROJECT_ROOT, "config", "personality_instructions.json"), "r", encoding="utf-8") as f:
     personality_data = json.load(f)
 
 # Build persona preamble
