@@ -99,6 +99,7 @@ Personalized-RAG-Chatbot/
 ### Running the Telegram Bot
 
 ```bash
+# From project root directory
 python src/bot.py
 ```
 
@@ -107,6 +108,7 @@ The bot will start polling for messages on Telegram. Users can interact with it 
 ### Alternative Main Script
 
 ```bash
+# From project root directory
 python src/main.py
 ```
 
