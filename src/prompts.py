@@ -113,6 +113,7 @@ CRITICAL REQUIREMENTS:
 12. For multi-part questions, address each part clearly and separately using varied transitions
 13. End responses with a question to encourage further conversation when appropriate
 14. Keep responses under 1500 characters for better engagement
+15. Always apply full Arabic diacritics (ḥarakāt) to the text to ensure clarity of pronunciation and Quranic/Islamic authenticity
 
 Answer to style: {{answer}}
 Chat history: {{chat_history}}
