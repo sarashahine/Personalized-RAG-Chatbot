@@ -1,0 +1,105 @@
+{
+  "discovery_timestamp": "2025-09-19T00:00:00Z",
+  "pipeline_components": {
+    "PLANNER_PROMPT": {
+      "file": "src/prompts.py",
+      "line": 7,
+      "description": "Planning stage prompt for analyzing user queries and determining response strategy",
+      "snippet": "PLANNER_PROMPT = \"\"\"{persona_preamble}\\n\\nأنت مرحلة التخطيط في روبوت محادثة ذكي يجسد السيد هاشم صفي الدين."
+    },
+    "ANSWER_GENERATION_PROMPT": {
+      "file": "src/prompts.py",
+      "line": 63,
+      "description": "Answer generation stage prompt for creating responses based on retrieved context",
+      "snippet": "ANSWER_GENERATION_PROMPT = \"\"\"{persona_preamble}\\n\\nأنشئ إجابة بناءً على الاستعلام والسياق المسترجع."
+    },
+    "VALIDATOR_PROMPT": {
+      "file": "src/prompts.py",
+      "line": 77,
+      "description": "Validation stage prompt for checking response quality and diacritics coverage",
+      "snippet": "VALIDATOR_PROMPT = \"\"\"{persona_preamble}\\n\\nتحقق من الإجابة المولدة للدقة والصلة وامتثال الشخصية، مع التركيز الخاص على التشكيل العربي الكامل."
+    },
+    "MASTER_PROMPT": {
+      "file": "src/prompts.py",
+      "line": 112,
+      "description": "Master prompt combining all stages for end-to-end response generation",
+      "snippet": "MASTER_PROMPT = \"\"\"{persona_preamble}\\n\\nأنت هاشم صفي الدين، عالم ديني معاصر يتحدث بأسلوب أصيل ودافئ، تجمع بين العلم الشرعي والحكمة العملية."
+    },
+    "PERSONA_STYLE_PROMPT": {
+      "file": "src/prompts.py",
+      "line": 160,
+      "description": "Persona styling stage prompt for final response formatting with diacritics",
+      "snippet": "PERSONA_STYLE_PROMPT = \"\"\"{persona_preamble}\\n\\nأنت مُصمم الشخصية النهائي. خذ الإجابة الأساسية وحولها إلى تعبير أصيل لهاشم صفي الدين."
+    }
+  },
+  "pipeline_modules": {
+    "bot.py": {
+      "file": "src/bot.py",
+      "description": "Main chatbot logic with LLM integration, retrieval, and response generation",
+      "key_functions": [
+        "generate_validated_response",
+        "classify_llm",
+        "retrieve_chunks",
+        "identify_used_sources",
+        "generate_followup_question",
+        "analyze_conversation_context"
+      ]
+    },
+    "prompts.py": {
+      "file": "src/prompts.py",
+      "description": "All LLM prompt templates for different pipeline stages",
+      "key_components": [
+        "PLANNER_PROMPT",
+        "ANSWER_GENERATION_PROMPT",
+        "VALIDATOR_PROMPT",
+        "MASTER_PROMPT",
+        "PERSONA_STYLE_PROMPT"
+      ]
+    },
+    "arabic_utils.py": {
+      "file": "src/arabic_utils.py",
+      "description": "Arabic language processing utilities including diacritization",
+      "key_functions": [
+        "ArabicDiacritizer",
+        "diacritize_arabic_text",
+        "calculate_arabic_diacritics_coverage"
+      ]
+    },
+    "shared_redis.py": {
+      "file": "src/shared_redis.py",
+      "description": "Redis-based conversation history and user profile management",
+      "key_functions": [
+        "RedisHistoryManager",
+        "format_history_for_prompt"
+      ]
+    }
+  },
+  "entry_points": {
+    "main_telegram_bot": {
+      "file": "src/main.py",
+      "description": "Telegram bot entry point with webhook handling"
+    },
+    "test_script": {
+      "file": "test_bot.py",
+      "description": "Simple test script for chatbot functionality"
+    },
+    "comprehensive_test": {
+      "file": "comprehensive_test.py",
+      "description": "Comprehensive evaluation script with metrics"
+    }
+  },
+  "data_files": {
+    "faiss_index": {
+      "file": "data/storage/openai_index.faiss",
+      "description": "FAISS vector index for document retrieval"
+    },
+    "metadata": {
+      "file": "data/storage/chunks_metadata.json",
+      "description": "Document chunks metadata with source information"
+    },
+    "persona_lexicon": {
+      "file": "config/persona_lexicon.json",
+      "description": "Arabic diacritization mappings for proper names and invocations"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+sentence_transformers
+faiss-cpu
+python-telegram-bot
+python-dotenv
+elevenlabs
+openai
+arabic-reshaper
+python-bidi
+watchdog
+camel-tools>=1.0.0   # preferred diacritizer (install only if compatible)
+mishkal>=0.3.7       # alternative diacritizer
+pytest

@@ -1,0 +1,30 @@
+{
+  "repo_discovery": {
+    "git_status": "M requirements.txt\n M src/bot.py\n M src/prompts.py\n M src/shared_redis.py\n?? audit_report/\n?? audit_report_generator.py\n?? audit_runner.py\n?? audit_static_analysis.py\n?? comprehensive_test.py\n?? config/persona_lexicon.json\n?? src/arabic_utils.py\n?? test_bot.py\n?? test_results.json\n?? tests/test_diacritics.py",
+    "prompt_files": {
+      "PLANNER_PROMPT": "src/prompts.py:7",
+      "PERSONA_STYLE_PROMPT": "src/prompts.py:160",
+      "ANSWER_GENERATION_PROMPT": "src/prompts.py:63",
+      "VALIDATOR_PROMPT": "src/prompts.py:77",
+      "MASTER_PROMPT": "src/prompts.py:112"
+    },
+    "llm_usage": {
+      "openai_client": "src/bot.py:28 (from openai import AsyncOpenAI)",
+      "model_usage": [
+        "src/bot.py:569 (model=\"gpt-4o\")",
+        "src/main.py:337 (model=\"gpt-4o\")",
+        "src/bot.py:256 (model=\"text-embedding-3-small\")"
+      ]
+    },
+    "orchestrator_candidates": [
+      "src/bot.py (contains MASTER_PROMPT usage and main pipeline logic)",
+      "src/main.py (contains multiple LLM calls and pipeline steps)"
+    ],
+    "key_findings": {
+      "main_orchestrator": "src/bot.py - contains generate_validated_response function",
+      "prompts_location": "src/prompts.py",
+      "validator_implementation": "likely in src/bot.py or needs to be created",
+      "persona_styler": "PERSONA_STYLE_PROMPT in src/prompts.py"
+    }
+  }
+}

@@ -7,3 +7,4 @@ openai
 arabic-reshaper
 python-bidi
 watchdog
+camel-tools
