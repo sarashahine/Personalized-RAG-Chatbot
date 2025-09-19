@@ -32,13 +32,10 @@ from functools import partial
 
 from shared_redis import RedisHistoryManager, format_history_for_prompt
 from prompts import (
-    PLANNER_PROMPT,
-    REFORMULATOR_PROMPT,
-    CLASSIFIER_PROMPT,
-    ANSWER_GENERATION_PROMPT,
-    VALIDATOR_PROMPT,
-    PERSONA_STYLE_PROMPT,
+    MASTER_PROMPT,
 )
+from arabic_utils import diacritize_arabic_text, calculate_arabic_diacritics_coverage, ensure_arabic_diacritization
+from utils.diacritizer import apply_diacritics, compute_diacritics_coverage
 
 # Determine project root (parent directory of src/)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -236,13 +233,18 @@ history = RedisHistoryManager(max_messages=40)
 # Response cache
 response_cache = {}
 
-async def get_cached_response(query: str, user_id: int) -> str:
-    cache_key = f"{user_id}:{query.lower().strip()}"
-    return response_cache.get(cache_key)
+def get_cache_key(query: str, chat_history: str) -> str:
+    import hashlib
+    key = f"{query}:{chat_history}"
+    return hashlib.md5(key.encode()).hexdigest()
 
-def set_cached_response(query: str, user_id: int, response: str):
-    cache_key = f"{user_id}:{query.lower().strip()}"
-    response_cache[cache_key] = response
+def get_cached_response(query: str, chat_history: str) -> str:
+    key = get_cache_key(query, chat_history)
+    return response_cache.get(key)
+
+def set_cached_response(query: str, chat_history: str, response: str):
+    key = get_cache_key(query, chat_history)
+    response_cache[key] = response
 
 # Constants
 MAX_ITERATIONS = 3
@@ -259,54 +261,10 @@ async def get_embedding(text: str) -> np.ndarray:
         logger.error(f"Error in get_embedding: {e}")
         return np.zeros(1536, dtype='float32')  # Return zero vector if error
 
-async def planner_llm(user_message: str, chat_history: str) -> Dict:
-    try:
-        messages = [
-            {"role": "system", "content": PLANNER_PROMPT.format(persona_preamble=PERSONA_PREAMBLE)},
-            {"role": "user", "content": f"User message: {user_message}\nChat history: {chat_history}"}
-        ]
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.1,
-        )
-        result = json.loads(response.choices[0].message.content.strip())
-        # Validate JSON structure
-        if not isinstance(result, dict):
-            raise ValueError("Invalid JSON structure")
-        # Add defaults for missing keys
-        if "needs_research" not in result:
-            result["needs_research"] = True
-        if "special_handling" not in result:
-            result["special_handling"] = None
-        if "strategy" not in result:
-            result["strategy"] = "general"
-        return result
-    except json.JSONDecodeError as e:
-        logger.error(f"Invalid JSON from planner LLM: {e}")
-        return {"strategy": "general", "needs_research": True, "special_handling": None}
-    except Exception as e:
-        logger.error(f"Error in planner_llm: {e}")
-        return {"strategy": "general", "needs_research": True, "special_handling": None}
 
-async def reformulator_llm(query: str, chat_history: str) -> str:
-    try:
-        messages = [
-            {"role": "system", "content": REFORMULATOR_PROMPT.format(persona_preamble=PERSONA_PREAMBLE)},
-            {"role": "user", "content": f"Query: {query}\nChat history: {chat_history}"}
-        ]
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.1,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        logger.error(f"Error in reformulator_llm: {e}")
-        return query  # Return original query if error
 
-async def classify_llm(query: str) -> Dict:
-    # Deterministic classification for simplicity - make it async for consistency
+async def classify_llm(query: str) -> List[str]:
+    # Simple keyword-based classification
     query_lower = query.lower()
     corpora = []
     if "سورة" in query_lower or "آية" in query_lower:
@@ -319,15 +277,9 @@ async def classify_llm(query: str) -> Dict:
         corpora.append("history")
     if "سياسة" in query_lower:
         corpora.append("politics")
-    
-    special_case = any(word in query_lower for word in ["تحية", "من أنت", "رقم", "حساس"])
-    
-    return {
-        "corpora": corpora or ["general"],
-        "is_special_case": special_case
-    }
+    return corpora or ["general"]
 
-async def retrieve_chunks(query: str, corpora: List[str], k: int = 5) -> List[Dict]:
+async def retrieve_chunks(query: str, corpora: List[str], k: int = 10) -> List[Dict]:
     try:
         query_vector = await get_embedding(query)
         query_vector = query_vector.reshape(1, -1)
@@ -363,155 +315,338 @@ async def retrieve_chunks(query: str, corpora: List[str], k: int = 5) -> List[Di
         logger.error(f"Error in retrieve_chunks: {e}")
         return []
 
-async def generate_answer_llm(query: str, retrieved_chunks: List[Dict], chat_history: str) -> str:
+def identify_used_sources(response: str, retrieved_chunks: List[Dict]) -> List[Dict]:
+    """Identify which sources were actually referenced in the response."""
+    used_sources = []
+
+    for chunk in retrieved_chunks:
+        metadata = chunk.get("metadata", {})
+        content = chunk.get("chunk", "")
+
+        # Check if the response contains phrases that indicate this source was used
+        # Look for direct quotes, specific references, or key phrases from the chunk
+        content_phrases = content.split('.')[:3]  # First few sentences
+        source_indicators = [
+            metadata.get("title", ""),
+            metadata.get("source", ""),
+            metadata.get("author", "")
+        ]
+
+        # Check if response contains significant phrases from this chunk
+        significant_matches = 0
+        for phrase in content_phrases:
+            phrase = phrase.strip()
+            if len(phrase) > 20:  # Only check substantial phrases
+                # Look for partial matches (3+ consecutive words)
+                words = phrase.split()
+                for i in range(len(words) - 2):
+                    trigram = ' '.join(words[i:i+3])
+                    if trigram in response:
+                        significant_matches += 1
+                        break
+
+        # If we found significant matches or direct source references
+        if significant_matches > 0 or any(indicator in response for indicator in source_indicators if indicator):
+            used_sources.append({
+                "title": metadata.get("title", "مصدر غير محدد"),
+                "source": metadata.get("source", ""),
+                "author": metadata.get("author", ""),
+                "url": metadata.get("url", ""),
+                "date": metadata.get("date", "")
+            })
+
+    return used_sources
+
+def generate_followup_question(query: str, response: str, chat_history: str, context_analysis: Dict = None) -> str:
+    """Generate a contextual follow-up question to encourage deeper conversation."""
+    if context_analysis is None:
+        context_analysis = analyze_conversation_context(chat_history, query)
+
+    # Different follow-up strategies based on context
+    if context_analysis["emotional_state"] == "negative":
+        followups = [
+            "ما الذي يقلقك أكثر في هذا الموضوع؟",
+            "هل تريد أن نتحدث عن طرق للتعامل مع هذا الشعور؟",
+            "كيف يمكنني مساعدتك في تخفيف هذا الهم؟"
+        ]
+    elif context_analysis["emotional_state"] == "confused":
+        followups = [
+            "هل أوضحت الإجابة ما كنت تريد معرفته؟",
+            "أي جزء من الإجابة يحتاج إلى توضيح أكثر؟",
+            "هل تريد أن أشرح بطريقة مختلفة؟"
+        ]
+    elif context_analysis["repeated_questions"]:
+        followups = [
+            "هل تجد صعوبة في فهم الإجابات السابقة؟",
+            "ما الجانب الذي ما زال غامضاً بالنسبة لك؟",
+            "هل تريد أن نركز على جانب معين من الموضوع؟"
+        ]
+    elif context_analysis["depth"] > 10:  # Deep conversation
+        followups = [
+            "كيف ترى تطبيق هذا في حياتك اليومية؟",
+            "ما الخطوة التالية التي ستتخذها؟",
+            "هل هناك جوانب أخرى تريد استكشافها؟"
+        ]
+    else:  # Normal conversation
+        followups = [
+            "كيف تشعر تجاه ما قلته؟",
+            "هل لديك أسئلة إضافية حول هذا الموضوع؟",
+            "ما رأيك في هذا الجانب من الدين الإسلامي؟"
+        ]
+
+    # Topic-specific follow-ups
+    if "prayer" in context_analysis["topics_discussed"]:
+        followups.extend([
+            "كيف هو حال صلاتك هذه الأيام؟",
+            "هل تواجه صعوبة في التركيز أثناء الصلاة؟"
+        ])
+    elif "quran" in context_analysis["topics_discussed"]:
+        followups.extend([
+            "ما السورة التي تحب تلاوتها أكثر؟",
+            "هل تطبق تعاليم القرآن في حياتك اليومية؟"
+        ])
+
+    return random.choice(followups)
+
+def generate_fallback_response(query: str, error_type: str) -> str:
+    """Generate a helpful fallback response when main generation fails."""
+    base_response = "أعوذ بالله من شر الشيطان الرجيم. بسم الله الرحمن الرحيم.\n\n"
+
+    if "retrieval" in error_type:
+        base_response += "عذراً، واجهت صعوبة في البحث عن المعلومات المطلوبة. "
+    elif "generation" in error_type:
+        base_response += "عذراً، واجهت صعوبة في صياغة الإجابة. "
+    else:
+        base_response += "عذراً، حدث خطأ تقني. "
+
+    # Provide helpful alternatives based on query type
+    query_lower = query.lower()
+    if any(word in query_lower for word in ["صلاة", "عبادة", "قرآن", "حديث"]):
+        base_response += "لكن يمكنني مساعدتك في مواضيع أخرى متعلقة بالعبادات والقرآن الكريم. ما السؤال الذي يدور في بالك؟"
+    elif any(word in query_lower for word in ["عاشوراء", "حسين", "كربلاء"]):
+        base_response += "لكن يمكنني الحديث عن قيم عاشوراء ودروسها العظيمة. هل تريد معرفة المزيد عن هذه المناسبة المباركة؟"
+    elif any(word in query_lower for word in ["أخلاق", "أدب", "سلوك"]):
+        base_response += "لكن يمكنني مساعدتك في فهم الأخلاق الإسلامية والسلوك القويم. ما الجانب الذي يهمك؟"
+    else:
+        base_response += "لكن يمكنني مساعدتك في أسئلة أخرى متعلقة بالدين والحياة الإسلامية. ما الذي يشغل بالك؟"
+
+    return base_response
+
+def analyze_conversation_context(chat_history: str, query: str) -> Dict[str, any]:
+    """Analyze conversation context to provide more intelligent responses."""
+    context_info = {
+        "depth": 0,
+        "emotional_state": "neutral",
+        "topics_discussed": [],
+        "repeated_questions": False,
+        "follow_up_needed": False
+    }
+
+    if not chat_history:
+        return context_info
+
+    lines = chat_history.split('\n')
+    context_info["depth"] = len([line for line in lines if line.strip()])
+
+    # Analyze emotional indicators
+    emotional_words = {
+        "positive": ["الحمد", "شكراً", "ممتاز", "جميل", "رائع"],
+        "negative": ["مشكلة", "صعب", "قلق", "حزين", "غاضب"],
+        "confused": ["لا أفهم", "مش عارف", "كيف", "لماذا", "ليش"],
+        "seeking": ["أريد", "أحتاج", "أبحث عن", "أسأل عن"]
+    }
+
+    for emotion, words in emotional_words.items():
+        if any(word in chat_history for word in words):
+            context_info["emotional_state"] = emotion
+            break
+
+    # Extract topics (simple keyword analysis)
+    topics = []
+    if any(word in chat_history for word in ["صلاة", "عبادة"]):
+        topics.append("prayer")
+    if any(word in chat_history for word in ["قرآن", "سورة", "آية"]):
+        topics.append("quran")
+    if any(word in chat_history for word in ["عاشوراء", "حسين", "كربلاء"]):
+        topics.append("ashura")
+    if any(word in chat_history for word in ["أخلاق", "أدب", "سلوك"]):
+        topics.append("ethics")
+
+    context_info["topics_discussed"] = topics
+
+    # Check for repeated questions
+    user_queries = [line for line in lines if "user:" in line.lower()]
+    if len(user_queries) > 2:
+        recent_queries = user_queries[-3:]
+        # Simple check for similar queries
+        if len(set(recent_queries)) < len(recent_queries):
+            context_info["repeated_questions"] = True
+
+    # Determine if follow-up is needed
+    context_info["follow_up_needed"] = (
+        context_info["emotional_state"] in ["negative", "confused"] or
+        context_info["repeated_questions"] or
+        len(topics) > 2  # Deep conversation
+    )
+
+    return context_info
+
+async def generate_validated_response(user_id: int, query: str, chat_history: str) -> str:
+    # Check cache
+    cached = get_cached_response(query, chat_history)
+    if cached:
+        return cached
+    
+    # Check for name-related queries
+    query_lower = query.lower()
+    if "shu esme" in query_lower or "what is my name" in query_lower or "اسمي" in query_lower or "ana shu esme" in query_lower:
+        user_profile = history.get_user_profile(user_id)
+        name = user_profile.get("name")
+        if name:
+            response = f"أعوذ بالله من شر الشيطان الرجيم. بسم الله الرحمن الرحيم.\n\nاسمك {name}، يا {name}. كيف يمكنني خدمتك اليوم؟"[:MAX_RESPONSE_LENGTH]
+            set_cached_response(query, chat_history, response)
+            return response
+    
+    # Handle special cases (simplified)
+    if "مرحبا" in query_lower or "hello" in query_lower or "hi" in query_lower:
+        user_profile = history.get_user_profile(user_id)
+        name = user_profile.get("name", "")
+        greeting = "السلام عليكم ورحمة الله وبركاته."
+        if name:
+            greeting += f" أهلاً وسهلاً بك، يا {name}."
+        else:
+            greeting += " أهلاً وسهلاً بك."
+        greeting += " كيف يمكنني خدمتك اليوم؟"
+        response = greeting[:MAX_RESPONSE_LENGTH]
+        set_cached_response(query, chat_history, response)
+        return response
+    elif "من أنت" in query_lower or "who are you" in query_lower or "tell me about yourself" in query_lower:
+        user_profile = history.get_user_profile(user_id)
+        name = user_profile.get("name", "")
+        identity_response = "أعوذ بالله من شر الشيطان الرجيم. بسم الله الرحمن الرحيم.\n\nأنا هاشم صفيّ الدين، خادم لأهل البيت سلام الله عليهم. أقدم لكم النصائح والمعلومات المستندة إلى القرآن الكريم والحديث الشريف وتراث أهل البيت."
+        if name:
+            identity_response += f" يا {name}."
+        identity_response += " كيف يمكنني خدمتكم اليوم؟"
+        response = identity_response[:MAX_RESPONSE_LENGTH]
+        set_cached_response(query, chat_history, response)
+        return response
+    
+    # Retrieval
+    try:
+        corpora = await classify_llm(query)
+        retrieved_chunks = await retrieve_chunks(query, corpora)
+    except Exception as e:
+        logger.error(f"Retrieval error: {e}")
+        # Continue with empty context but provide helpful response
+        retrieved_chunks = []
+    
+    # Analyze conversation context for more intelligent responses
+    context_analysis = analyze_conversation_context(chat_history, query)
+
+    # Adjust prompt based on context
+    enhanced_prompt = MASTER_PROMPT
+    if context_analysis["emotional_state"] == "negative":
+        enhanced_prompt += "\n\nلاحظ أن المتحدث يبدو قلقاً أو حزيناً. كن داعماً وعاطفياً في ردك."
+    elif context_analysis["emotional_state"] == "confused":
+        enhanced_prompt += "\n\nالمتحدث يبدو confused. شرح الأمور ببساطة ووضوح."
+    elif context_analysis["repeated_questions"]:
+        enhanced_prompt += "\n\nالمتحدث يسأل أسئلة متكررة. حاول تقديم إجابات مختلفة أو أعمق."
+
+    if context_analysis["topics_discussed"]:
+        enhanced_prompt += f"\n\nالمواضيع السابقة المطروحة: {', '.join(context_analysis['topics_discussed'])}"
+
+    # Generate response
     try:
         context = "\n\n".join([c["chunk"] for c in retrieved_chunks]) if retrieved_chunks else ""
         messages = [
-            {"role": "system", "content": ANSWER_GENERATION_PROMPT.format(
+            {"role": "system", "content": enhanced_prompt.format(
                 persona_preamble=PERSONA_PREAMBLE,
                 chat_history=chat_history,
                 context=context
             )},
             {"role": "user", "content": query}
         ]
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+        response_llm = await client.chat.completions.create(
+            model="gpt-4o",
             messages=messages,
-            temperature=0.3,
+            temperature=0.0,  # Deterministic for final answers
         )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        logger.error(f"Error in generate_answer_llm: {e}")
-        return "عذراً، حدث خطأ في توليد الإجابة."
+        final_answer = response_llm.choices[0].message.content.strip()
 
-async def validate_llm(query: str, answer: str, retrieved_chunks: List[Dict], chat_history: str) -> Dict:
-    try:
-        context = "\n\n".join([c["chunk"] for c in retrieved_chunks]) if retrieved_chunks else ""
-        messages = [
-            {"role": "system", "content": VALIDATOR_PROMPT.format(
-                persona_preamble=PERSONA_PREAMBLE,
-                chat_history=chat_history,
-                context=context
-            )},
-            {"role": "user", "content": f"Query: {query}\nAnswer: {answer}"}
-        ]
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.1,
-        )
-        result = json.loads(response.choices[0].message.content.strip())
-        # Validate JSON structure
-        if not isinstance(result, dict):
-            raise ValueError("Invalid JSON structure")
-        # Add defaults for missing keys
-        if "is_valid" not in result:
-            result["is_valid"] = True
-        if "issues" not in result:
-            result["issues"] = []
-        if "must_refine_query" not in result:
-            result["must_refine_query"] = False
-        if "refine_instructions" not in result:
-            result["refine_instructions"] = ""
-        if "needs_persona_styling" not in result:
-            result["needs_persona_styling"] = True
-        return result
-    except json.JSONDecodeError as e:
-        logger.error(f"Invalid JSON from validator LLM: {e}")
-        return {"is_valid": True, "issues": [], "must_refine_query": False, "refine_instructions": "", "needs_persona_styling": True}
-    except Exception as e:
-        logger.error(f"Error in validate_llm: {e}")
-        return {"is_valid": True, "issues": [], "must_refine_query": False, "refine_instructions": "", "needs_persona_styling": True}
-
-async def persona_style_llm(answer: str, chat_history: str) -> str:
-    try:
-        messages = [
-            {"role": "system", "content": PERSONA_STYLE_PROMPT.format(
-                persona_preamble=PERSONA_PREAMBLE,
-                chat_history=chat_history
-            )},
-            {"role": "user", "content": answer}
-        ]
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.2,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        logger.error(f"Error in persona_style_llm: {e}")
-        return answer  # Return original answer if error
-
-async def generate_validated_response(user_id: int, query: str, chat_history: str) -> str:
-    iteration = 0
-    current_query = query
-    
-    while iteration < MAX_ITERATIONS:
-        iteration += 1
-        
-        # Step 1: Planner
-        plan = await planner_llm(current_query, chat_history)
-        
-        # Check for name-related queries
-        query_lower = current_query.lower()
-        if "shu esme" in query_lower or "what is my name" in query_lower or "اسمي" in query_lower:
-            user_profile = history.get_user_profile(user_id)
-            name = user_profile.get("name")
-            if name:
-                return f"أعوذ بالله من شر الشيطان الرجيم. بسم الله الرحمن الرحيم.\n\nاسمك {name}، يا {name}. كيف يمكنني خدمتك اليوم؟"[:MAX_RESPONSE_LENGTH]
-        
-        # Handle special cases
-        if plan.get("special_handling"):
-            if plan["special_handling"] == "greeting":
-                user_profile = history.get_user_profile(user_id)
-                name = user_profile.get("name", "")
-                greeting = "السلام عليكم ورحمة الله وبركاته."
-                if name:
-                    greeting += f" أهلاً وسهلاً بك، يا {name}."
-                else:
-                    greeting += " أهلاً وسهلاً بك."
-                greeting += " كيف يمكنني خدمتك اليوم؟"
-                return greeting[:MAX_RESPONSE_LENGTH]
-            elif plan["special_handling"] == "identity":
-                return "أعوذ بالله من شر الشيطان الرجيم. بسم الله الرحمن الرحيم.\n\nأنا هاشم صفيّ الدين، خادم لأهل البيت سلام الله عليهم. أقدم لكم النصائح والمعلومات المستندة إلى القرآن الكريم والحديث الشريف وتراث أهل البيت. كيف يمكنني خدمتكم اليوم؟"[:MAX_RESPONSE_LENGTH]
-            # Add other special cases here
-        
-        # Step 2: Reformulator
-        reformulated_query = await reformulator_llm(current_query, chat_history)
-        
-        # Step 3: Classifier (only if research is needed)
-        if plan.get("needs_research", True):
-            classification = classify_llm(reformulated_query)
-            corpora = classification["corpora"]
+        # ----------- after persona_styler returns --------------
+        # styled = persona_styler(... )  # existing call -> may return a string or JSON
+        # We expect persona_styler to now return JSON with "styled_answer" and "styled_answer_diacritized"
+        if isinstance(final_answer, dict):
+            final_text = final_answer.get("styled_answer_diacritized") or final_answer.get("styled_answer")
         else:
-            corpora = []
-        
-        # Step 4: Retrieval (conditional)
-        if plan.get("needs_research", True):
-            retrieved_chunks = await retrieve_chunks(reformulated_query, corpora)
-        else:
-            retrieved_chunks = []
-        
-        # Step 5: Answer Generation
-        draft_answer = await generate_answer_llm(reformulated_query, retrieved_chunks, chat_history)
-        
-        # Step 6: Validator
-        validation = await validate_llm(reformulated_query, draft_answer, retrieved_chunks, chat_history)
-        
-        if validation["is_valid"]:
-            # Step 7: Persona Style Pass (always apply for character priority)
-            final_answer = await persona_style_llm(draft_answer, chat_history)
-            return final_answer[:MAX_RESPONSE_LENGTH]
-        
-        if validation.get("must_refine_query", False):
-            current_query = validation.get("refine_instructions", current_query)
-            continue
-        
-        # If invalid but no refinement needed, return anyway
-        return f"{draft_answer}\n\nملاحظات: {', '.join(validation['issues'])}"[:MAX_RESPONSE_LENGTH]
-    
-    # Fallback
-    return "عذراً، حدث خطأ في معالجة الاستعلام. يرجى المحاولة مرة أخرى."
+            # old behavior: string. Apply diacritizer proactively.
+            final_text = apply_diacritics(final_answer)
+
+        # Now run validator (ensure validator receives both texts)
+        validator_input = {
+            "query": query,
+            "answer": final_text,
+            "context": context,
+            "chat_history": chat_history
+        }
+        # For now, implement inline validator logic
+        from utils.diacritizer import compute_diacritics_coverage
+        coverage, per_word = compute_diacritics_coverage(final_text)
+        validator_response = {
+            "is_valid": True,
+            "issues": [],
+            "must_refine_query": False,
+            "refine_instructions": "",
+            "needs_persona_styling": False,
+            "persona_score": 0.8,  # placeholder
+            "diacritics_coverage": coverage,
+            "diacritized_answer": ""
+        }
+        if coverage < 0.95:
+            fixed = apply_diacritics(final_text)
+            validator_response["diacritized_answer"] = fixed
+            validator_response["is_valid"] = False
+            validator_response["issues"].append("insufficient_diacritics")
+        # detect missing sources
+        if context and "مصادر" not in final_text and "مصدر" not in final_text:
+            validator_response["issues"].append("missing_sources")
+            validator_response["is_valid"] = False
+
+        # If validator returns diacritized correction, use it
+        if validator_response.get("diacritics_coverage", 0) < 0.95 and validator_response.get("diacritized_answer"):
+            final_text = validator_response["diacritized_answer"]
+
+        # Identify and append used sources
+        used_sources = identify_used_sources(final_text, retrieved_chunks)
+        if used_sources:
+            sources_text = "\n\nمصادر:\n" + "\n".join([
+                f"• {source['title']}" + (f" - {source['author']}" if source['author'] else "") +
+                (f" ({source['date']})" if source['date'] else "")
+                for source in used_sources[:3]  # Limit to 3 sources
+            ])
+            final_text += sources_text
+
+        # Final output to user must be `final_text` (fully diacritized)
+        response = final_text[:MAX_RESPONSE_LENGTH]
+        set_cached_response(query, chat_history, response)
+        return response
+    except Exception as e:
+        logger.error(f"Response generation error: {e}")
+        fallback_response = generate_fallback_response(query, "generation")
+        set_cached_response(query, chat_history, fallback_response)
+        return fallback_response
+
+async def generate_tts(text: str) -> bytes:
+    try:
+        audio = elevenlabs.generate(
+            text=text,
+            voice="Rachel",  # Or appropriate voice
+            model_id="eleven_monolingual_v1"
+        )
+        return audio
+    except Exception as e:
+        logger.error(f"TTS error: {e}")
+        return None
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, message_type: str):
     user_id = update.effective_user.id
@@ -548,6 +683,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, mes
         
         history.add_message(user_id, "system", response)
         await update.message.reply_text(response)
+        
+        # Optional TTS
+        tts_audio = await generate_tts(response)
+        if tts_audio:
+            audio_io = BytesIO(tts_audio)
+            audio_io.name = "response.mp3"
+            await update.message.reply_voice(voice=audio_io)
         
     except Exception as e:
         logger.error(f"Error handling message: {e}")
