@@ -49,6 +49,10 @@ client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
 elevenlabs = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
 
+# Voice settings
+VOICE_ID = "FeEvUACvySn9x0TMXIxQ"
+MODEL_ID = "eleven_multilingual_v2"
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -547,7 +551,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, mes
         response = await generate_validated_response(user_id, user_input, chat_history)
         
         history.add_message(user_id, "system", response)
-        await update.message.reply_text(response)
+
+        audio = elevenlabs.text_to_speech.convert(
+            text=response,
+            voice_id=VOICE_ID,
+            model_id=MODEL_ID,
+            output_format="mp3_44100_128",
+        )
+
+        audio_bytes = b"".join(audio) if not isinstance(audio, bytes) else audio
+
+        audio_file = BytesIO(audio_bytes)
+        audio_file.name = "output.mp3"
+
+        await update.message.reply_voice(voice=audio_file, caption=response)
         
     except Exception as e:
         logger.error(f"Error handling message: {e}")
