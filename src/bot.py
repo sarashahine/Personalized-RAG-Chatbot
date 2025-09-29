@@ -564,7 +564,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, mes
         audio_file = BytesIO(audio_bytes)
         audio_file.name = "output.mp3"
 
-        await update.message.reply_voice(voice=audio_file, caption=response)
+        #         await update.message.reply_voice(voice=audio_file, caption=response)
+        await update.message.reply_voice(voice=audio_file)
         
     except Exception as e:
         logger.error(f"Error handling message: {e}")
